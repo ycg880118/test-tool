@@ -260,9 +260,13 @@
                 @if (_validation.MissingRequiredFields.Count > 0)
                 {
                     <div class="alert alert-danger mb-2">
-                        <strong>Missing required Okta fields:</strong>
+                        <strong>Required mapping missing:</strong>
                         @(string.Join(", ", _validation.MissingRequiredFields)).
-                        No CSV column maps onto these — the run is blocked until they are mapped.
+                        <span class="d-block small">
+                            A user is matched by <code>login</code> or <code>email</code> (at least one required).
+                            @(State.CreateMissing ? "Creating new users also requires firstName and lastName." : "")
+                            The run is blocked until these are mapped.
+                        </span>
                     </div>
                 }
                 @if (_validation.UnmappedHeaders.Count > 0)
@@ -290,7 +294,7 @@
         <div class="card-body">
             <div class="form-check mb-3">
                 <input class="form-check-input" type="checkbox" id="createMissing"
-                       @bind="State.CreateMissing" />
+                       @bind="State.CreateMissing" @bind:after="Revalidate" />
                 <label class="form-check-label" for="createMissing">
                     Create new users when no matching user exists
                     <span class="text-muted">(unchecked = update existing users only; non-existent ones are skipped)</span>
@@ -609,7 +613,7 @@
     private void Revalidate()
     {
         if (State.Csv is not null)
-            _validation = Mapping.Validate(State.Mapping, IncludedHeaders, State.RequiredFieldNames);
+            _validation = Mapping.Validate(State.Mapping, IncludedHeaders, State.CreateMissing);
     }
 
     private string MappedTo(string header) =>

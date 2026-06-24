@@ -252,36 +252,35 @@ public class OktaService
     {
         var result = new UpsertResult { RowNumber = rowNumber };
 
-        var identifier = profile.GetValueOrDefault("login")
-                         ?? profile.GetValueOrDefault("email");
-        result.Identifier = identifier ?? "(no login/email)";
+        var login = profile.GetValueOrDefault("login");
+        var email = profile.GetValueOrDefault("email");
+        var hasLogin = !string.IsNullOrWhiteSpace(login);
+        var hasEmail = !string.IsNullOrWhiteSpace(email);
 
-        if (string.IsNullOrWhiteSpace(identifier))
+        // Identify by login or email — at least one is required.
+        result.Identifier = hasLogin ? login! : hasEmail ? email! : "(no login/email)";
+
+        if (!hasLogin && !hasEmail)
         {
             result.Action = UpsertAction.Skipped;
             result.Message = "Row has no login or email value to identify the user.";
-            return result;
+            return Finish(result, rowNumber);
         }
 
         try
         {
-            var lookup = await client.GetAsync(
-                $"api/v1/users/{Uri.EscapeDataString(identifier)}");
+            var existingId = await FindUserIdAsync(client, login, email);
 
-            var payload = JsonSerializer.Serialize(new { profile });
-
-            if (lookup.IsSuccessStatusCode)
+            if (existingId is not null)
             {
-                using var doc = JsonDocument.Parse(await lookup.Content.ReadAsStringAsync());
-                var id = doc.RootElement.GetProperty("id").GetString();
-
                 // POST /users/{id} is a PARTIAL update: Okta only changes the profile
                 // attributes present in the body and leaves every other attribute
                 // untouched. The payload already contains only the selected, mapped,
                 // non-blank fields, so unselected fields are never modified. (Do NOT
                 // switch this to PUT, which replaces the whole profile.)
+                var payload = JsonSerializer.Serialize(new { profile });
                 var resp = await client.PostAsync(
-                    $"api/v1/users/{id}",
+                    $"api/v1/users/{existingId}",
                     new StringContent(payload, Encoding.UTF8, "application/json"));
 
                 if (resp.IsSuccessStatusCode)
@@ -296,16 +295,34 @@ public class OktaService
                                      Trim(await resp.Content.ReadAsStringAsync());
                 }
             }
-            else if (lookup.StatusCode == HttpStatusCode.NotFound)
+            else
             {
                 if (!createMissing)
                 {
                     result.Action = UpsertAction.Skipped;
                     result.Message = "User does not exist and \"create new users\" is turned off.";
-                    return result;
+                    return Finish(result, rowNumber);
                 }
 
+                // Create requires first and last name in addition to login/email.
+                if (string.IsNullOrWhiteSpace(profile.GetValueOrDefault("firstName")) ||
+                    string.IsNullOrWhiteSpace(profile.GetValueOrDefault("lastName")))
+                {
+                    result.Action = UpsertAction.Failed;
+                    result.Message = "Cannot create user: firstName and lastName are required.";
+                    return Finish(result, rowNumber);
+                }
+
+                // Okta requires both login and email to create a user. If only one was
+                // provided, reuse it for the other (they are usually identical).
+                var createProfile = new Dictionary<string, string>(profile);
+                if (string.IsNullOrWhiteSpace(createProfile.GetValueOrDefault("login")) && hasEmail)
+                    createProfile["login"] = email!;
+                if (string.IsNullOrWhiteSpace(createProfile.GetValueOrDefault("email")) && hasLogin)
+                    createProfile["email"] = login!;
+
                 var activate = conn.Activate ? "true" : "false";
+                var payload = JsonSerializer.Serialize(new { profile = createProfile });
                 var resp = await client.PostAsync(
                     $"api/v1/users?activate={activate}",
                     new StringContent(payload, Encoding.UTF8, "application/json"));
@@ -322,12 +339,6 @@ public class OktaService
                                      Trim(await resp.Content.ReadAsStringAsync());
                 }
             }
-            else
-            {
-                result.Action = UpsertAction.Failed;
-                result.Message = $"Lookup failed HTTP {(int)lookup.StatusCode}: " +
-                                 Trim(await lookup.Content.ReadAsStringAsync());
-            }
         }
         catch (Exception ex)
         {
@@ -337,12 +348,60 @@ public class OktaService
                 rowNumber, result.Identifier);
         }
 
+        return Finish(result, rowNumber);
+    }
+
+    /// <summary>
+    /// Finds an existing user's id by login or email. Login uses the strongly
+    /// consistent GET /users/{login}; email uses a search query (since the path
+    /// lookup only resolves id/login, not arbitrary email). Returns null if none.
+    /// </summary>
+    private async Task<string?> FindUserIdAsync(HttpClient client, string? login, string? email)
+    {
+        if (!string.IsNullOrWhiteSpace(login))
+        {
+            var byLogin = await client.GetAsync($"api/v1/users/{Uri.EscapeDataString(login)}");
+            if (byLogin.IsSuccessStatusCode)
+            {
+                using var doc = JsonDocument.Parse(await byLogin.Content.ReadAsStringAsync());
+                return doc.RootElement.GetProperty("id").GetString();
+            }
+        }
+
+        var clauses = new List<string>();
+        if (!string.IsNullOrWhiteSpace(email))
+            clauses.Add($"profile.email eq \"{SearchEscape(email!)}\"");
+        if (!string.IsNullOrWhiteSpace(login))
+            clauses.Add($"profile.login eq \"{SearchEscape(login!)}\"");
+
+        if (clauses.Count > 0)
+        {
+            var query = Uri.EscapeDataString(string.Join(" or ", clauses));
+            var resp = await client.GetAsync($"api/v1/users?search={query}&limit=1");
+            if (resp.IsSuccessStatusCode)
+            {
+                using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+                if (doc.RootElement.ValueKind == JsonValueKind.Array &&
+                    doc.RootElement.GetArrayLength() > 0)
+                {
+                    return doc.RootElement[0].GetProperty("id").GetString();
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private UpsertResult Finish(UpsertResult result, int rowNumber)
+    {
         if (result.Action == UpsertAction.Failed)
             _logger.LogWarning("Row {Row} ({User}) failed: {Message}",
                 rowNumber, result.Identifier, result.Message);
-
         return result;
     }
+
+    // Escape double quotes inside an Okta search filter string value.
+    private static string SearchEscape(string value) => value.Replace("\"", "\\\"");
 
     private static string Trim(string body) =>
         body.Length > 400 ? body[..400] + "…" : body;

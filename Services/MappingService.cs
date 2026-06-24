@@ -64,7 +64,7 @@ public class MappingService
     }
 
     public MappingValidation Validate(MappingConfig config, IEnumerable<string> headers,
-        IEnumerable<string> requiredFieldNames)
+        bool requireNameForCreate)
     {
         var headerList = headers.ToList();
         var result = new MappingValidation();
@@ -81,10 +81,15 @@ public class MappingService
             .Where(t => !string.IsNullOrEmpty(t))
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var required in requiredFieldNames)
+        // Identifying a user (for matching and updating) needs login or email.
+        if (!mappedTargets.Contains("login") && !mappedTargets.Contains("email"))
+            result.MissingRequiredFields.Add("login or email");
+
+        // Creating new users additionally needs first and last name.
+        if (requireNameForCreate)
         {
-            if (!mappedTargets.Contains(required))
-                result.MissingRequiredFields.Add(required);
+            if (!mappedTargets.Contains("firstName")) result.MissingRequiredFields.Add("firstName");
+            if (!mappedTargets.Contains("lastName")) result.MissingRequiredFields.Add("lastName");
         }
 
         return result;
