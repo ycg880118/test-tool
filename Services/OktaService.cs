@@ -273,12 +273,26 @@ public class OktaService
 
             if (existingId is not null)
             {
+                // GUARD: never modify identity fields (login/email) on an existing
+                // user. They are used only to match — overwriting them must never
+                // happen through this tool, so strip them from the update payload.
+                var updateProfile = profile
+                    .Where(kv => !IsIdentityField(kv.Key))
+                    .ToDictionary(kv => kv.Key, kv => kv.Value);
+
+                if (updateProfile.Count == 0)
+                {
+                    result.Action = UpsertAction.Skipped;
+                    result.Message = "Nothing to update — login/email are never modified by this tool.";
+                    return Finish(result, rowNumber);
+                }
+
                 // POST /users/{id} is a PARTIAL update: Okta only changes the profile
                 // attributes present in the body and leaves every other attribute
-                // untouched. The payload already contains only the selected, mapped,
-                // non-blank fields, so unselected fields are never modified. (Do NOT
-                // switch this to PUT, which replaces the whole profile.)
-                var payload = JsonSerializer.Serialize(new { profile });
+                // untouched. The payload contains only the selected, mapped, non-blank
+                // fields minus login/email, so nothing else is modified. (Do NOT switch
+                // this to PUT, which replaces the whole profile.)
+                var payload = JsonSerializer.Serialize(new { profile = updateProfile });
                 var resp = await client.PostAsync(
                     $"api/v1/users/{existingId}",
                     new StringContent(payload, Encoding.UTF8, "application/json"));
@@ -399,6 +413,11 @@ public class OktaService
                 rowNumber, result.Identifier, result.Message);
         return result;
     }
+
+    // login/email identify a user and must never be overwritten on update.
+    private static bool IsIdentityField(string field) =>
+        field.Equals("login", StringComparison.OrdinalIgnoreCase) ||
+        field.Equals("email", StringComparison.OrdinalIgnoreCase);
 
     // Escape double quotes inside an Okta search filter string value.
     private static string SearchEscape(string value) => value.Replace("\"", "\\\"");

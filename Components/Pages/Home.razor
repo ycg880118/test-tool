@@ -310,6 +310,10 @@
                     <span class="text-muted">(unchecked = update existing users only; non-existent ones are skipped)</span>
                 </label>
             </div>
+            <p class="text-muted small">
+                <strong>login</strong> and <strong>email</strong> are used only to match users and are
+                <strong>never modified</strong> on existing users (they are stripped from updates).
+            </p>
             <button class="btn btn-primary" disabled="@(!CanRun)" @onclick="Run">
                 @if (_processing)
                 {
