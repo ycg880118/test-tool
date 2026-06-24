@@ -1,0 +1,4 @@
+First Name,Last Name,Email,Login,Mobile Phone,Department,Legacy ID,Notes
+Ada,Lovelace,ada@example.com,ada@example.com,555-0100,Engineering,EMP001,first programmer
+Alan,Turing,alan@example.com,alan@example.com,555-0101,Research,EMP002,ignore me column
+Grace,Hopper,grace@example.com,grace@example.com,555-0102,Engineering,EMP003,compiler pioneer

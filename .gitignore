@@ -1,0 +1,28 @@
+# Build output
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio / VS Code / Rider
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.idea/
+
+# Local Claude Code agent state
+.claude/
+
+# Runtime config written by the app — may contain a real Okta API token.
+# Never commit these.
+connection.json
+mapping.json
+
+# Exported run results and any uploaded user data may contain real PII.
+okta-import-results-*.csv
+*.csv
+# ...except the bundled fake sample.
+!sample-users.csv

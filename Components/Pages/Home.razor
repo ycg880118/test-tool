@@ -1,0 +1,670 @@
+@page "/"
+@inject AppState State
+@inject CsvService Csv
+@inject MappingService Mapping
+@inject OktaService Okta
+@inject ConnectionService Conn
+@inject IJSRuntime JS
+
+<PageTitle>Okta User Manager</PageTitle>
+
+<h1 class="mb-4">Okta User Manager</h1>
+
+<!-- ───────────── Step 1: Connection ───────────── -->
+<div class="card mb-4">
+    <div class="card-header"><strong>1. Okta connection</strong></div>
+    <div class="card-body">
+        <div class="row g-3">
+            <div class="col-md-6">
+                <label class="form-label">Okta org URL</label>
+                <input class="form-control" placeholder="https://your-org.okta.com"
+                       @bind="State.Connection.BaseUrl" />
+            </div>
+            <div class="col-md-6">
+                <label class="form-label">API token (SSWS)</label>
+                <div class="input-group">
+                    <input type="@(_showToken ? "text" : "password")" class="form-control"
+                           placeholder="API token" @bind="State.Connection.ApiToken" />
+                    <button class="btn btn-outline-secondary" type="button"
+                            @onclick="() => _showToken = !_showToken">
+                        @(_showToken ? "Hide" : "Show")
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div class="form-check mt-3">
+            <input class="form-check-input" type="checkbox" id="activate"
+                   @bind="State.Connection.Activate" />
+            <label class="form-check-label" for="activate">
+                Activate newly created users immediately
+            </label>
+        </div>
+
+        <div class="d-flex flex-wrap gap-2 mt-3 align-items-center">
+            <button class="btn btn-outline-primary"
+                    disabled="@(!State.Connection.IsConfigured || _testing)"
+                    @onclick="TestConnection">
+                @(_testing ? "Testing…" : "Test connection")
+            </button>
+            <button class="btn btn-outline-primary"
+                    disabled="@(!State.Connection.IsConfigured || _loadingFields)"
+                    @onclick="LoadOktaFields">
+                @(_loadingFields ? "Loading fields…" : "Load Okta fields")
+            </button>
+            <button class="btn btn-outline-success"
+                    disabled="@(!State.Connection.IsConfigured)"
+                    @onclick="SaveConnection">
+                Save &amp; remember
+            </button>
+
+            <label class="btn btn-outline-secondary mb-0">
+                Load from file…
+                <InputFile OnChange="LoadConnectionFile" accept=".json" hidden />
+            </label>
+
+            @if (Conn.HasSaved)
+            {
+                <button class="btn btn-outline-danger" @onclick="ForgetConnection">Forget saved</button>
+            }
+        </div>
+
+        @if (_connMessage is not null)
+        {
+            <div class="mt-2 @(_connOk ? "text-success" : "text-danger")">@_connMessage</div>
+        }
+        @if (_configMessage is not null)
+        {
+            <div class="mt-2 text-success">@_configMessage</div>
+        }
+        @if (_fieldsMessage is not null)
+        {
+            <div class="mt-2 @(_fieldsOk ? "text-success" : "text-danger")">@_fieldsMessage</div>
+        }
+        <div class="text-muted small mt-2">
+            Okta fields available for mapping: <strong>@State.ProfileFields.Count</strong>
+            @(State.FieldsFromOkta
+                ? "(live from your Okta org's schema)"
+                : "(built-in defaults — click \"Load Okta fields\" to fetch your org's real schema)").
+        </div>
+        <div class="text-muted small mt-2">
+            "Save &amp; remember" stores the URL and token in <code>connection.json</code> next to
+            the app so it is pre-filled next time. The token is saved in plain text — only do this on
+            a machine you trust.
+        </div>
+    </div>
+</div>
+
+<!-- ───────────── Step 2: Upload CSV ───────────── -->
+<div class="card mb-4">
+    <div class="card-header"><strong>2. Upload CSV</strong></div>
+    <div class="card-body">
+        <InputFile class="form-control" OnChange="OnFileSelected" accept=".csv" />
+        @if (_uploadError is not null)
+        {
+            <div class="text-danger mt-2">@_uploadError</div>
+        }
+        @if (State.Csv is not null)
+        {
+            <div class="mt-3">
+                Loaded <strong>@State.Csv.FileName</strong> —
+                @State.Csv.RowCount row(s), @State.Csv.Headers.Count column(s).
+            </div>
+        }
+    </div>
+</div>
+
+@if (State.Csv is not null)
+{
+    <!-- ───────────── Step 3: Preview & select columns ───────────── -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <strong>3. Preview &amp; select columns</strong>
+            <div>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="IncludeAll">Select all</button>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="ExcludeAll">Clear all</button>
+            </div>
+        </div>
+        <div class="card-body">
+            @{
+                var pageRows = PagedPreviewRows();
+                var startNumber = _previewPage * _previewPageSize;
+            }
+            <div class="d-flex flex-wrap gap-3 align-items-center mb-2">
+                <span class="text-muted">
+                    Tick the columns you want to send to Okta — unticked columns are ignored.
+                </span>
+                <div class="d-flex align-items-center gap-1 ms-auto">
+                    <span class="text-muted small">Rows per page</span>
+                    <select class="form-select form-select-sm" style="width:auto"
+                            value="@_previewPageSize" @onchange="OnPreviewPageSizeChanged">
+                        <option value="10">10</option>
+                        <option value="25">25</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-sm table-bordered align-middle">
+                    <thead>
+                        <tr>
+                            <th class="text-muted">#</th>
+                            @foreach (var header in State.Csv.Headers)
+                            {
+                                <th class="@(State.IsIncluded(header) ? "" : "text-muted table-secondary")">
+                                    <div class="form-check mb-0">
+                                        <input class="form-check-input" type="checkbox"
+                                               checked="@State.IsIncluded(header)"
+                                               @onchange="e => ToggleColumn(header, (bool)(e.Value ?? false))" />
+                                        <label class="form-check-label">@header</label>
+                                    </div>
+                                </th>
+                            }
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for (var i = 0; i < pageRows.Count; i++)
+                        {
+                            var row = pageRows[i];
+                            <tr>
+                                <td class="text-muted">@(startNumber + i + 1)</td>
+                                @foreach (var header in State.Csv.Headers)
+                                {
+                                    <td class="@(State.IsIncluded(header) ? "" : "text-muted")">
+                                        @row.GetValueOrDefault(header, "")
+                                    </td>
+                                }
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+                <button class="btn btn-sm btn-outline-secondary"
+                        disabled="@(_previewPage == 0)" @onclick="PreviewPrev">Previous</button>
+                <span class="text-muted small">
+                    Page @(_previewPage + 1) of @TotalPreviewPages —
+                    rows @(startNumber + 1)–@(startNumber + pageRows.Count) of @State.Csv.RowCount
+                </span>
+                <button class="btn btn-sm btn-outline-secondary"
+                        disabled="@(_previewPage + 1 >= TotalPreviewPages)" @onclick="PreviewNext">Next</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ───────────── Step 4: Mapping ───────────── -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <strong>4. Map selected columns to Okta fields</strong>
+            <div>
+                <button class="btn btn-sm btn-outline-secondary" @onclick="AutoMap">Auto-map</button>
+                <button class="btn btn-sm btn-success" @onclick="SaveMapping">Save mapping</button>
+            </div>
+        </div>
+        <div class="card-body">
+            <table class="table table-sm align-middle">
+                <thead>
+                    <tr><th>CSV column</th><th>Sample value</th><th>Okta field</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var header in IncludedHeaders)
+                    {
+                        <tr>
+                            <td><code>@header</code></td>
+                            <td class="text-muted">@SampleValue(header)</td>
+                            <td>
+                                <select class="form-select form-select-sm"
+                                        value="@MappedTo(header)"
+                                        @onchange="e => SetMapping(header, e.Value?.ToString() ?? string.Empty)">
+                                    <option value="">— choose field —</option>
+                                    @foreach (var field in State.ProfileFields)
+                                    {
+                                        <option value="@field.Name">
+                                            @(field.Required ? field.Name + " *" : field.Name)
+                                        </option>
+                                    }
+                                </select>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+
+            @if (_validation is not null)
+            {
+                @if (_validation.MissingRequiredFields.Count > 0)
+                {
+                    <div class="alert alert-danger mb-2">
+                        <strong>Missing required Okta fields:</strong>
+                        @(string.Join(", ", _validation.MissingRequiredFields)).
+                        No CSV column maps onto these — the run is blocked until they are mapped.
+                    </div>
+                }
+                @if (_validation.UnmappedHeaders.Count > 0)
+                {
+                    <div class="alert alert-warning mb-0">
+                        <strong>Selected columns with no Okta field (will be skipped):</strong>
+                        @(string.Join(", ", _validation.UnmappedHeaders)).
+                    </div>
+                }
+                @if (_validation.IsValid && _validation.UnmappedHeaders.Count == 0)
+                {
+                    <div class="alert alert-success mb-0">All selected columns are mapped. Ready to run.</div>
+                }
+            }
+            @if (_mappingSaved)
+            {
+                <div class="text-success mt-2">Mapping saved to @Mapping.ConfigPath</div>
+            }
+        </div>
+    </div>
+
+    <!-- ───────────── Step 5: Run ───────────── -->
+    <div class="card mb-4">
+        <div class="card-header"><strong>5. Create / update users</strong></div>
+        <div class="card-body">
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" id="createMissing"
+                       @bind="State.CreateMissing" />
+                <label class="form-check-label" for="createMissing">
+                    Create new users when no matching user exists
+                    <span class="text-muted">(unchecked = update existing users only; non-existent ones are skipped)</span>
+                </label>
+            </div>
+            <button class="btn btn-primary" disabled="@(!CanRun)" @onclick="Run">
+                @if (_processing)
+                {
+                    @($"Processing… ({_results.Count}/{State.Csv.RowCount})")
+                }
+                else
+                {
+                    @($"Process {State.Csv.RowCount} user(s)")
+                }
+            </button>
+            @if (!State.Connection.IsConfigured)
+            {
+                <span class="ms-3 text-muted">Enter the connection details in step 1 first.</span>
+            }
+
+            @if (_results.Count > 0)
+            {
+                <div class="mt-3 d-flex flex-wrap gap-2 align-items-center">
+                    <span class="text-muted small">Filter:</span>
+                    <button type="button" class="badge border-0 bg-success @Active(UpsertAction.Created)"
+                            @onclick="() => SetFilter(UpsertAction.Created)">@Count(UpsertAction.Created) created</button>
+                    <button type="button" class="badge border-0 bg-info text-dark @Active(UpsertAction.Updated)"
+                            @onclick="() => SetFilter(UpsertAction.Updated)">@Count(UpsertAction.Updated) updated</button>
+                    <button type="button" class="badge border-0 bg-secondary @Active(UpsertAction.Skipped)"
+                            @onclick="() => SetFilter(UpsertAction.Skipped)">@Count(UpsertAction.Skipped) skipped</button>
+                    <button type="button" class="badge border-0 bg-danger @Active(UpsertAction.Failed)"
+                            @onclick="() => SetFilter(UpsertAction.Failed)">@Count(UpsertAction.Failed) failed</button>
+
+                    @if (_filter is not null)
+                    {
+                        <button type="button" class="btn btn-sm btn-link p-0" @onclick="() => SetFilter(null)">Clear filter</button>
+                    }
+                    <button type="button" class="btn btn-sm btn-outline-secondary ms-auto" @onclick="ExportCsv">
+                        Export results (CSV)
+                    </button>
+                </div>
+                <table class="table table-sm mt-3">
+                    <thead>
+                        <tr><th>#</th><th>User</th><th>Result</th><th>Detail</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var r in FilteredResults)
+                        {
+                            <tr class="@RowClass(r.Action)">
+                                <td>@r.RowNumber</td>
+                                <td>@r.Identifier</td>
+                                <td><span class="@BadgeClass(r.Action)">@r.Action</span></td>
+                                <td class="small">@r.Message</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private bool _testing;
+    private bool _connOk;
+    private string? _connMessage;
+    private bool _showToken;
+    private string? _configMessage;
+    private bool _loadingFields;
+    private bool _fieldsOk;
+    private string? _fieldsMessage;
+
+    private string? _uploadError;
+
+    private MappingValidation? _validation;
+    private bool _mappingSaved;
+
+    private bool _processing;
+    private readonly List<UpsertResult> _results = new();
+    private UpsertAction? _filter;
+
+    private IEnumerable<UpsertResult> FilteredResults =>
+        _filter is null ? _results : _results.Where(r => r.Action == _filter);
+
+    private const long MaxUploadBytes = 50 * 1024 * 1024; // 50 MB
+
+    private int _previewPageSize = 10;
+    private int _previewPage;
+
+    private int TotalPreviewPages => State.Csv is null
+        ? 1
+        : Math.Max(1, (State.Csv.RowCount + _previewPageSize - 1) / _previewPageSize);
+
+    private List<Dictionary<string, string>> PagedPreviewRows() =>
+        State.Csv is null
+            ? new()
+            : State.Csv.Rows.Skip(_previewPage * _previewPageSize).Take(_previewPageSize).ToList();
+
+    private void PreviewPrev()
+    {
+        if (_previewPage > 0) _previewPage--;
+    }
+
+    private void PreviewNext()
+    {
+        if (_previewPage + 1 < TotalPreviewPages) _previewPage++;
+    }
+
+    private void OnPreviewPageSizeChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var size) && size > 0)
+        {
+            _previewPageSize = size;
+            _previewPage = 0;
+        }
+    }
+
+    private IEnumerable<string> IncludedHeaders =>
+        State.Csv?.Headers.Where(State.IsIncluded) ?? Enumerable.Empty<string>();
+
+    protected override void OnInitialized()
+    {
+        // Restore the remembered connection so it's pre-filled.
+        var saved = Conn.Load();
+        if (saved is not null)
+        {
+            State.Connection.BaseUrl = saved.BaseUrl;
+            State.Connection.ApiToken = saved.ApiToken;
+            State.Connection.Activate = saved.Activate;
+        }
+
+        // Keep in-memory edits across navigation; otherwise load the saved mapping.
+        if (State.Mapping.Map.Count == 0)
+            State.Mapping = Mapping.Load();
+    }
+
+    private void SaveConnection()
+    {
+        Conn.Save(State.Connection);
+        _configMessage = $"Connection saved to {Conn.ConfigPath}";
+    }
+
+    private async Task LoadConnectionFile(InputFileChangeEventArgs e)
+    {
+        _configMessage = null;
+        _connMessage = null;
+        try
+        {
+            await using var stream = e.File.OpenReadStream(1024 * 1024); // 1 MB is plenty
+            using var reader = new StreamReader(stream);
+            var json = await reader.ReadToEndAsync();
+
+            var loaded = Conn.Parse(json);
+            if (loaded is null)
+            {
+                _connOk = false;
+                _connMessage = "That file isn't a valid connection JSON " +
+                               "(expected baseUrl / apiToken / activate).";
+                return;
+            }
+
+            State.Connection.BaseUrl = loaded.BaseUrl;
+            State.Connection.ApiToken = loaded.ApiToken;
+            State.Connection.Activate = loaded.Activate;
+
+            // Loading a file also remembers it as the current selection.
+            Conn.Save(State.Connection);
+            _configMessage = $"Loaded connection from {e.File.Name} (remembered).";
+        }
+        catch (Exception ex)
+        {
+            _connOk = false;
+            _connMessage = $"Could not read file: {ex.Message}";
+        }
+    }
+
+    private void ForgetConnection()
+    {
+        Conn.Forget();
+        _configMessage = "Saved connection forgotten.";
+    }
+
+    private bool CanRun =>
+        !_processing
+        && State.Connection.IsConfigured
+        && State.Csv is not null
+        && (_validation?.IsValid ?? false);
+
+    private async Task TestConnection()
+    {
+        _testing = true;
+        _connMessage = null;
+        var (ok, message) = await Okta.TestConnectionAsync(State.Connection);
+        _connOk = ok;
+        _connMessage = message;
+        // On a good connection, pull the real field schema too.
+        if (ok) await LoadOktaFields();
+        _testing = false;
+    }
+
+    private async Task LoadOktaFields()
+    {
+        _loadingFields = true;
+        _fieldsMessage = null;
+        var (ok, fields, message) = await Okta.GetProfileFieldsAsync(State.Connection);
+        if (ok)
+        {
+            State.ProfileFields = fields;
+            State.FieldsFromOkta = true;
+            // Required-field set may differ from the defaults — re-check the mapping.
+            if (State.Csv is not null) Revalidate();
+        }
+        _fieldsOk = ok;
+        _fieldsMessage = message;
+        _loadingFields = false;
+    }
+
+    private async Task OnFileSelected(InputFileChangeEventArgs e)
+    {
+        _uploadError = null;
+        _results.Clear();
+        _previewPage = 0;
+        try
+        {
+            await using var stream = e.File.OpenReadStream(MaxUploadBytes);
+            // Copy to memory so the parser has a synchronous, seekable stream.
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+            ms.Position = 0;
+
+            State.Csv = await Csv.ParseAsync(ms, e.File.Name);
+
+            // Carry over saved mapping, then fill the gaps with auto-suggestions.
+            Mapping.AutoMap(State.Mapping, State.Csv.Headers, State.ProfileFields);
+            ResetSelection();
+            Revalidate();
+        }
+        catch (Exception ex)
+        {
+            State.Csv = null;
+            _uploadError = $"Could not read CSV: {ex.Message}";
+        }
+    }
+
+    // Default selection: columns we could map are included; unknown extras are ignored.
+    private void ResetSelection()
+    {
+        if (State.Csv is null) return;
+        State.ExcludedColumns.Clear();
+        foreach (var header in State.Csv.Headers)
+        {
+            if (string.IsNullOrEmpty(State.Mapping.Map.GetValueOrDefault(header, "")))
+                State.ExcludedColumns.Add(header);
+        }
+    }
+
+    private void ToggleColumn(string header, bool included)
+    {
+        if (included) State.ExcludedColumns.Remove(header);
+        else State.ExcludedColumns.Add(header);
+        Revalidate();
+    }
+
+    private void IncludeAll()
+    {
+        State.ExcludedColumns.Clear();
+        Revalidate();
+    }
+
+    private void ExcludeAll()
+    {
+        if (State.Csv is null) return;
+        foreach (var header in State.Csv.Headers)
+            State.ExcludedColumns.Add(header);
+        Revalidate();
+    }
+
+    private void SetMapping(string header, string oktaField)
+    {
+        State.Mapping.Map[header] = oktaField;
+        _mappingSaved = false;
+        Revalidate();
+    }
+
+    private void AutoMap()
+    {
+        if (State.Csv is null) return;
+        // Clear existing so auto-map can re-suggest everything.
+        foreach (var h in State.Csv.Headers)
+            State.Mapping.Map[h] = "";
+        Mapping.AutoMap(State.Mapping, State.Csv.Headers, State.ProfileFields);
+        ResetSelection();
+        _mappingSaved = false;
+        Revalidate();
+    }
+
+    private void SaveMapping()
+    {
+        Mapping.Save(State.Mapping);
+        _mappingSaved = true;
+    }
+
+    private void Revalidate()
+    {
+        if (State.Csv is not null)
+            _validation = Mapping.Validate(State.Mapping, IncludedHeaders, State.RequiredFieldNames);
+    }
+
+    private string MappedTo(string header) =>
+        State.Mapping.Map.GetValueOrDefault(header, string.Empty);
+
+    private string SampleValue(string header) =>
+        State.Csv?.Rows.FirstOrDefault()?.GetValueOrDefault(header, "") ?? "";
+
+    private async Task Run()
+    {
+        if (State.Csv is null) return;
+        _processing = true;
+        _filter = null;
+        _results.Clear();
+
+        var profiles = State.Csv.Rows.Select(BuildProfile).ToList();
+
+        await Okta.ProcessAsync(State.Connection, profiles, State.CreateMissing, async result =>
+        {
+            _results.Add(result);
+            await InvokeAsync(StateHasChanged);
+        });
+
+        _processing = false;
+    }
+
+    private Dictionary<string, string> BuildProfile(Dictionary<string, string> row)
+    {
+        var profile = new Dictionary<string, string>();
+        if (State.Csv is null) return profile;
+
+        foreach (var header in State.Csv.Headers)
+        {
+            if (!State.IsIncluded(header)) continue; // user excluded this column
+
+            var target = State.Mapping.Map.GetValueOrDefault(header, "");
+            if (string.IsNullOrEmpty(target)) continue;
+
+            var value = row.GetValueOrDefault(header, "");
+            if (string.IsNullOrWhiteSpace(value)) continue; // don't send blanks
+
+            profile[target] = value;
+        }
+        return profile;
+    }
+
+    private int Count(UpsertAction action) => _results.Count(r => r.Action == action);
+
+    // Toggle the row filter: clicking the active one (or null) clears it.
+    private void SetFilter(UpsertAction? action) =>
+        _filter = (_filter == action) ? null : action;
+
+    // Adds an outline so the active filter badge stands out.
+    private string Active(UpsertAction action) =>
+        _filter == action ? "border border-2 border-dark" : "";
+
+    private async Task ExportCsv()
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("Row,User,Result,Detail");
+        foreach (var r in FilteredResults)
+        {
+            sb.Append(r.RowNumber).Append(',')
+              .Append(CsvField(r.Identifier)).Append(',')
+              .Append(r.Action).Append(',')
+              .Append(CsvField(r.Message)).AppendLine();
+        }
+
+        var name = $"okta-import-results-{DateTime.Now:yyyyMMdd-HHmmss}.csv";
+        await JS.InvokeVoidAsync("downloadTextFile", name, sb.ToString());
+    }
+
+    // Quote a CSV field if it contains a comma, quote or newline.
+    private static string CsvField(string value)
+    {
+        if (value.IndexOfAny(new[] { ',', '"', '\n', '\r' }) < 0) return value;
+        return "\"" + value.Replace("\"", "\"\"") + "\"";
+    }
+
+    private static string BadgeClass(UpsertAction action) => action switch
+    {
+        UpsertAction.Created => "badge bg-success",
+        UpsertAction.Updated => "badge bg-info text-dark",
+        UpsertAction.Skipped => "badge bg-secondary",
+        _ => "badge bg-danger",
+    };
+
+    // Bootstrap contextual row colors: green=created, blue=updated, grey=skipped, red=failed.
+    private static string RowClass(UpsertAction action) => action switch
+    {
+        UpsertAction.Created => "table-success",
+        UpsertAction.Updated => "table-info",
+        UpsertAction.Skipped => "table-secondary",
+        _ => "table-danger",
+    };
+}

@@ -1,0 +1,133 @@
+@page "/mappings"
+@inject AppState State
+@inject MappingService Mapping
+
+<PageTitle>Field Mappings</PageTitle>
+
+<h1 class="mb-3">Field Mappings</h1>
+<p class="text-muted">
+    These map CSV column headers to Okta profile fields and are reused every time
+    you import a CSV. Edit them here, then <strong>Save</strong> to persist.
+</p>
+
+<div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+        <strong>CSV column → Okta field</strong>
+        <div>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="AddRow">Add row</button>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="Reload">Reload from disk</button>
+            <button class="btn btn-sm btn-success" @onclick="Save">Save</button>
+        </div>
+    </div>
+    <div class="card-body">
+        @if (_rows.Count == 0)
+        {
+            <p class="text-muted mb-0">No mappings yet. Click <em>Add row</em> to create one.</p>
+        }
+        else
+        {
+            <table class="table table-sm align-middle">
+                <thead>
+                    <tr><th style="width:45%">CSV column header</th><th style="width:45%">Okta field</th><th></th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in _rows)
+                    {
+                        <tr>
+                            <td>
+                                <input class="form-control form-control-sm" placeholder="e.g. First Name"
+                                       @bind="row.Header" />
+                            </td>
+                            <td>
+                                <select class="form-select form-select-sm" @bind="row.Field">
+                                    <option value="">— ignore —</option>
+                                    @foreach (var field in State.ProfileFields)
+                                    {
+                                        <option value="@field.Name">
+                                            @(field.Required ? field.Name + " *" : field.Name)
+                                        </option>
+                                    }
+                                </select>
+                            </td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-danger"
+                                        @onclick="() => RemoveRow(row)">Remove</button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+
+        @if (_message is not null)
+        {
+            <div class="@_messageClass mt-2 mb-0">@_message</div>
+        }
+        <div class="text-muted small mt-2">Stored in @Mapping.ConfigPath</div>
+    </div>
+</div>
+
+@code {
+    private sealed class MapRow
+    {
+        public string Header { get; set; } = "";
+        public string Field { get; set; } = "";
+    }
+
+    private readonly List<MapRow> _rows = new();
+    private string? _message;
+    private string _messageClass = "text-success";
+
+    protected override void OnInitialized()
+    {
+        // Share whatever is already in memory; otherwise read the saved file.
+        if (State.Mapping.Map.Count == 0)
+            State.Mapping = Mapping.Load();
+        LoadRows();
+    }
+
+    private void LoadRows()
+    {
+        _rows.Clear();
+        foreach (var kvp in State.Mapping.Map.OrderBy(k => k.Key))
+            _rows.Add(new MapRow { Header = kvp.Key, Field = kvp.Value });
+    }
+
+    private void AddRow() => _rows.Add(new MapRow());
+
+    private void RemoveRow(MapRow row) => _rows.Remove(row);
+
+    private void Reload()
+    {
+        State.Mapping = Mapping.Load();
+        LoadRows();
+        Show("Reloaded from disk.", ok: true);
+    }
+
+    private void Save()
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in _rows)
+        {
+            var header = row.Header.Trim();
+            if (string.IsNullOrEmpty(header)) continue; // skip blank header rows
+
+            if (map.ContainsKey(header))
+            {
+                Show($"Duplicate CSV column \"{header}\" — each header must be unique.", ok: false);
+                return;
+            }
+            map[header] = row.Field;
+        }
+
+        State.Mapping.Map = map;
+        Mapping.Save(State.Mapping);
+        Show($"Saved {map.Count} mapping(s).", ok: true);
+    }
+
+    private void Show(string message, bool ok)
+    {
+        _message = message;
+        _messageClass = ok ? "text-success" : "text-danger";
+    }
+}
