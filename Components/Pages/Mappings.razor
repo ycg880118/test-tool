@@ -1,6 +1,7 @@
 @page "/mappings"
 @inject AppState State
 @inject MappingService Mapping
+@inject OktaService Okta
 
 <PageTitle>Field Mappings</PageTitle>
 
@@ -14,12 +15,29 @@
     <div class="card-header d-flex justify-content-between align-items-center">
         <strong>CSV column → Okta field</strong>
         <div>
+            <button class="btn btn-sm btn-outline-primary"
+                    disabled="@(!State.Connection.IsConfigured || _loadingFields)"
+                    @onclick="ReloadOktaFields">
+                @(_loadingFields ? "Reloading…" : "Reload Okta fields")
+            </button>
             <button class="btn btn-sm btn-outline-secondary" @onclick="AddRow">Add row</button>
             <button class="btn btn-sm btn-outline-secondary" @onclick="Reload">Reload from disk</button>
             <button class="btn btn-sm btn-success" @onclick="Save">Save</button>
         </div>
     </div>
     <div class="card-body">
+        <p class="text-muted small">
+            Okta field options: <strong>@State.ProfileFields.Count</strong>
+            @(State.FieldsFromOkta ? "loaded live from your Okta org." : "from built-in defaults.")
+            @if (!State.Connection.IsConfigured)
+            {
+                <span>Set the connection on the <a href="">Import Users</a> page to reload from the API.</span>
+            }
+        </p>
+        @if (_fieldsMessage is not null)
+        {
+            <div class="@(_fieldsOk ? "text-success" : "text-danger") small mb-2">@_fieldsMessage</div>
+        }
         @if (_rows.Count == 0)
         {
             <p class="text-muted mb-0">No mappings yet. Click <em>Add row</em> to create one.</p>
@@ -33,10 +51,10 @@
                 <tbody>
                     @foreach (var row in _rows)
                     {
-                        <tr>
+                        <tr @key="row">
                             <td>
                                 <input class="form-control form-control-sm" placeholder="e.g. First Name"
-                                       @bind="row.Header" />
+                                       @bind="row.Header" @bind:event="oninput" />
                             </td>
                             <td>
                                 <select class="form-select form-select-sm" @bind="row.Field">
@@ -77,12 +95,14 @@
     private readonly List<MapRow> _rows = new();
     private string? _message;
     private string _messageClass = "text-success";
+    private bool _loadingFields;
+    private bool _fieldsOk;
+    private string? _fieldsMessage;
 
     protected override void OnInitialized()
     {
-        // Share whatever is already in memory; otherwise read the saved file.
-        if (State.Mapping.Map.Count == 0)
-            State.Mapping = Mapping.Load();
+        // mapping.json on disk is the source of truth for this editor.
+        State.Mapping = Mapping.Load();
         LoadRows();
     }
 
@@ -91,6 +111,21 @@
         _rows.Clear();
         foreach (var kvp in State.Mapping.Map.OrderBy(k => k.Key))
             _rows.Add(new MapRow { Header = kvp.Key, Field = kvp.Value });
+    }
+
+    private async Task ReloadOktaFields()
+    {
+        _loadingFields = true;
+        _fieldsMessage = null;
+        var (ok, fields, message) = await Okta.GetProfileFieldsAsync(State.Connection);
+        if (ok)
+        {
+            State.ProfileFields = fields;
+            State.FieldsFromOkta = true;
+        }
+        _fieldsOk = ok;
+        _fieldsMessage = message;
+        _loadingFields = false;
     }
 
     private void AddRow() => _rows.Add(new MapRow());

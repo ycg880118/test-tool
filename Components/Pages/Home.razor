@@ -197,11 +197,20 @@
         <div class="card-header d-flex justify-content-between align-items-center">
             <strong>4. Map selected columns to Okta fields</strong>
             <div>
+                <button class="btn btn-sm btn-outline-primary"
+                        disabled="@(!State.Connection.IsConfigured || _loadingFields)"
+                        @onclick="LoadOktaFields">
+                    @(_loadingFields ? "Reloading…" : "Reload Okta fields")
+                </button>
                 <button class="btn btn-sm btn-outline-secondary" @onclick="AutoMap">Auto-map</button>
                 <button class="btn btn-sm btn-success" @onclick="SaveMapping">Save mapping</button>
             </div>
         </div>
         <div class="card-body">
+            <p class="text-muted small mb-3">
+                Mapping targets: <strong>@State.ProfileFields.Count</strong> Okta field(s)
+                @(State.FieldsFromOkta ? "loaded live from your Okta org." : "from built-in defaults — click \"Reload Okta fields\" to fetch your org's schema.")
+            </p>
             <table class="table table-sm align-middle">
                 <thead>
                     <tr><th>CSV column</th><th>Sample value</th><th>Okta field</th></tr>
@@ -498,7 +507,9 @@
 
             State.Csv = await Csv.ParseAsync(ms, e.File.Name);
 
-            // Carry over saved mapping, then fill the gaps with auto-suggestions.
+            // Start from the latest saved mapping on disk, then fill the gaps
+            // with auto-suggestions for any new headers.
+            State.Mapping = Mapping.Load();
             Mapping.AutoMap(State.Mapping, State.Csv.Headers, State.ProfileFields);
             ResetSelection();
             Revalidate();
