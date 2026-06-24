@@ -115,6 +115,16 @@
     <div class="card-header"><strong>2. Upload CSV</strong></div>
     <div class="card-body">
         <InputFile class="form-control" OnChange="OnFileSelected" accept=".csv" />
+        <div class="mt-2">
+            <button class="btn btn-sm btn-outline-secondary" @onclick="DownloadTemplate">
+                Download CSV template (Okta field headers)
+            </button>
+            <span class="text-muted small ms-2">
+                A blank CSV whose columns are the @State.ProfileFields.Count Okta fields
+                @(State.FieldsFromOkta ? "from your org" : "(defaults — load your org's fields for the exact set)").
+                Required fields come first. Fill it in and upload it here.
+            </span>
+        </div>
         @if (_uploadError is not null)
         {
             <div class="text-danger mt-2">@_uploadError</div>
@@ -495,6 +505,14 @@
         // On a good connection, pull the real field schema too.
         if (ok) await LoadOktaFields();
         _testing = false;
+    }
+
+    private async Task DownloadTemplate()
+    {
+        // Header-only CSV; required Okta fields first, then the rest (order preserved).
+        var ordered = State.ProfileFields.OrderByDescending(f => f.Required).ToList();
+        var header = string.Join(",", ordered.Select(f => CsvField(f.Name)));
+        await JS.InvokeVoidAsync("downloadTextFile", "okta-onboarding-template.csv", header + "\r\n");
     }
 
     private async Task RunDiagnostics()

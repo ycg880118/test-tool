@@ -2,6 +2,7 @@
 @inject AppState State
 @inject MappingService Mapping
 @inject OktaService Okta
+@inject IJSRuntime JS
 
 <PageTitle>Field Mappings</PageTitle>
 
@@ -20,6 +21,7 @@
                     @onclick="ReloadOktaFields">
                 @(_loadingFields ? "Reloading…" : "Reload Okta fields")
             </button>
+            <button class="btn btn-sm btn-outline-secondary" @onclick="DownloadTemplate">Download CSV template</button>
             <button class="btn btn-sm btn-outline-secondary" @onclick="AddRow">Add row</button>
             <button class="btn btn-sm btn-outline-secondary" @onclick="Reload">Reload from disk</button>
             <button class="btn btn-sm btn-success" @onclick="Save">Save</button>
@@ -126,6 +128,20 @@
         _fieldsOk = ok;
         _fieldsMessage = message;
         _loadingFields = false;
+    }
+
+    private async Task DownloadTemplate()
+    {
+        // Header-only CSV; required Okta fields first, then the rest.
+        var ordered = State.ProfileFields.OrderByDescending(f => f.Required).ToList();
+        var header = string.Join(",", ordered.Select(f => CsvField(f.Name)));
+        await JS.InvokeVoidAsync("downloadTextFile", "okta-onboarding-template.csv", header + "\r\n");
+    }
+
+    private static string CsvField(string value)
+    {
+        if (value.IndexOfAny(new[] { ',', '"', '\n', '\r' }) < 0) return value;
+        return "\"" + value.Replace("\"", "\"\"") + "\"";
     }
 
     private void AddRow() => _rows.Add(new MapRow());
