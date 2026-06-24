@@ -21,6 +21,9 @@ obj/
 connection.json
 mapping.json
 
+# Log files — may contain user data from Okta responses.
+logs/
+
 # Exported run results and any uploaded user data may contain real PII.
 okta-import-results-*.csv
 *.csv

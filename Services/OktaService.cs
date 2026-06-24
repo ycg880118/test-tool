@@ -49,11 +49,14 @@ public class OktaService
             // usually means the org URL points at a non-API host (e.g. the
             // "-admin" console domain) rather than https://your-org.okta.com.
             var hit = resp.RequestMessage?.RequestUri?.ToString() ?? "(unknown URL)";
+            _logger.LogWarning("Test connection failed: HTTP {Status} from GET {Url}. Body: {Body}",
+                (int)resp.StatusCode, hit, Trim(body));
             return (false,
                 $"HTTP {(int)resp.StatusCode} {resp.ReasonPhrase} from GET {hit}: {Trim(body)}");
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Test connection threw for URL {Url}", conn.BaseUrl);
             return (false, ex.Message);
         }
     }
@@ -165,8 +168,11 @@ public class OktaService
             var resp = await client.GetAsync("api/v1/meta/schemas/user/default");
             if (!resp.IsSuccessStatusCode)
             {
-                return (false, new(),
-                    $"HTTP {(int)resp.StatusCode}: {Trim(await resp.Content.ReadAsStringAsync())}");
+                var hit = resp.RequestMessage?.RequestUri?.ToString() ?? "(unknown URL)";
+                var body = Trim(await resp.Content.ReadAsStringAsync());
+                _logger.LogWarning("Load Okta fields failed: HTTP {Status} from GET {Url}. Body: {Body}",
+                    (int)resp.StatusCode, hit, body);
+                return (false, new(), $"HTTP {(int)resp.StatusCode}: {body}");
             }
 
             using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
@@ -198,10 +204,12 @@ public class OktaService
             if (fields.Count == 0)
                 return (false, new(), "Schema returned no profile fields.");
 
+            _logger.LogInformation("Loaded {Count} Okta profile field(s) from schema.", fields.Count);
             return (true, fields, $"Loaded {fields.Count} field(s) from Okta.");
         }
         catch (Exception ex)
         {
+            _logger.LogError(ex, "Load Okta fields threw for URL {Url}", conn.BaseUrl);
             return (false, new(), ex.Message);
         }
     }
@@ -219,11 +227,23 @@ public class OktaService
     {
         using var client = CreateClient(conn);
 
+        _logger.LogInformation("Starting Okta import of {Count} row(s). CreateMissing={CreateMissing}.",
+            profiles.Count, createMissing);
+
+        var counts = new Dictionary<UpsertAction, int>();
         for (var i = 0; i < profiles.Count; i++)
         {
             var result = await UpsertOneAsync(client, conn, profiles[i], i + 1, createMissing);
+            counts[result.Action] = counts.GetValueOrDefault(result.Action) + 1;
             await onResult(result);
         }
+
+        _logger.LogInformation(
+            "Okta import finished. Created={Created}, Updated={Updated}, Skipped={Skipped}, Failed={Failed}.",
+            counts.GetValueOrDefault(UpsertAction.Created),
+            counts.GetValueOrDefault(UpsertAction.Updated),
+            counts.GetValueOrDefault(UpsertAction.Skipped),
+            counts.GetValueOrDefault(UpsertAction.Failed));
     }
 
     private async Task<UpsertResult> UpsertOneAsync(
@@ -313,7 +333,13 @@ public class OktaService
         {
             result.Action = UpsertAction.Failed;
             result.Message = ex.Message;
+            _logger.LogError(ex, "Row {Row} ({User}) threw during upsert.",
+                rowNumber, result.Identifier);
         }
+
+        if (result.Action == UpsertAction.Failed)
+            _logger.LogWarning("Row {Row} ({User}) failed: {Message}",
+                rowNumber, result.Identifier, result.Message);
 
         return result;
     }

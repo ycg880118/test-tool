@@ -1,7 +1,19 @@
 using OktaUserManager.Components;
 using OktaUserManager.Services;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Logging: console + a daily rolling file in ./logs so failures are kept on disk.
+builder.Host.UseSerilog((context, config) => config
+    .ReadFrom.Configuration(context.Configuration)
+    .Enrich.FromLogContext()
+    .WriteTo.Console()
+    .WriteTo.File(
+        path: Path.Combine(context.HostingEnvironment.ContentRootPath, "logs", "okta-user-manager-.log"),
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 14,
+        outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {SourceContext} {Message:lj}{NewLine}{Exception}"));
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
