@@ -314,7 +314,7 @@
                 <strong>login</strong> and <strong>email</strong> are used only to match users and are
                 <strong>never modified</strong> on existing users (they are stripped from updates).
             </p>
-            <button class="btn btn-primary" disabled="@(!CanRun)" @onclick="Run">
+            <button class="btn btn-primary" disabled="@(!CanRun || _confirming)" @onclick="RequestRun">
                 @if (_processing)
                 {
                     @($"Processing… ({_results.Count}/{State.Csv.RowCount})")
@@ -327,6 +327,43 @@
             @if (!State.Connection.IsConfigured)
             {
                 <span class="ms-3 text-muted">Enter the connection details in step 1 first.</span>
+            }
+
+            @if (_confirming)
+            {
+                <div class="alert @(_envNonProd ? "alert-warning" : "alert-danger") mt-3">
+                    <h5 class="mb-2">Confirm where this will run</h5>
+                    <div>Target Okta org:</div>
+                    <div class="fs-5 mb-2"><code>@State.Connection.BaseUrl</code></div>
+                    <div class="mb-2">
+                        Detected environment:
+                        <span class="badge @(_envNonProd ? "bg-success" : "bg-danger")">@_envLabel</span>
+                    </div>
+                    <div class="mb-2">
+                        About to @(State.CreateMissing ? "create / update" : "update")
+                        <strong>@State.Csv.RowCount</strong> user(s).
+                    </div>
+
+                    @if (!_envNonProd)
+                    {
+                        <p class="fw-bold text-danger mb-2">
+                            ⚠ WARNING: this URL does NOT look like a dev or QA environment — it may be
+                            PRODUCTION. Make sure this is intentional before continuing.
+                        </p>
+                        <div class="form-check mb-2">
+                            <input class="form-check-input" type="checkbox" id="prodAck" @bind="_prodAck" />
+                            <label class="form-check-label fw-bold" for="prodAck">
+                                I understand this may be production and want to continue.
+                            </label>
+                        </div>
+                    }
+
+                    <button class="btn @(_envNonProd ? "btn-primary" : "btn-danger")"
+                            disabled="@(!_envNonProd && !_prodAck)" @onclick="ConfirmRun">
+                        Yes, run against @_targetHost
+                    </button>
+                    <button class="btn btn-outline-secondary" @onclick="CancelRun">Cancel</button>
+                </div>
             }
 
             @if (_results.Count > 0)
@@ -389,6 +426,11 @@
     private bool _mappingSaved;
 
     private bool _processing;
+    private bool _confirming;
+    private bool _envNonProd;
+    private string _envLabel = "";
+    private string _targetHost = "";
+    private bool _prodAck;
     private readonly List<UpsertResult> _results = new();
     private UpsertAction? _filter;
 
@@ -643,6 +685,44 @@
 
     private string SampleValue(string header) =>
         State.Csv?.Rows.FirstOrDefault()?.GetValueOrDefault(header, "") ?? "";
+
+    // Show the confirmation panel (with environment check) before doing anything.
+    private void RequestRun()
+    {
+        var (label, nonProd) = DetectEnvironment();
+        _envLabel = label;
+        _envNonProd = nonProd;
+        _targetHost = Uri.TryCreate(State.Connection.BaseUrl, UriKind.Absolute, out var u)
+            ? u.Host
+            : State.Connection.BaseUrl;
+        _prodAck = false;
+        _confirming = true;
+    }
+
+    private void CancelRun() => _confirming = false;
+
+    private async Task ConfirmRun()
+    {
+        _confirming = false;
+        await Run();
+    }
+
+    // Heuristic: treat the org as non-prod only when a dev/QA-style token appears
+    // as a whole word in the URL (so "developers" won't mask a prod host). Anything
+    // else is flagged as possibly production.
+    private (string label, bool nonProd) DetectEnvironment()
+    {
+        var url = (State.Connection.BaseUrl ?? "").ToLowerInvariant();
+        if (url.Contains("oktapreview.com"))
+            return ("PREVIEW / DEV", true);
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            url, @"\b(dev|qa|test|stg|stage|staging|sandbox|uat|demo|preview|nonprod)\b");
+        if (match.Success)
+            return (match.Value.ToUpperInvariant(), true);
+
+        return ("UNKNOWN — possibly PRODUCTION", false);
+    }
 
     private async Task Run()
     {
